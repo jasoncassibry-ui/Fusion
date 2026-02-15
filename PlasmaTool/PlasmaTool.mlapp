@@ -1,0 +1,230 @@
+classdef PlasmaTool < matlab.apps.AppBase
+    % PlasmaTool - App Designer style plasma parameter calculator.
+    % Note: saved as .mlapp filename for delivery; class is fully MATLAB code.
+
+    properties (Access = public)
+        UIFigure matlab.ui.Figure
+        Grid matlab.ui.container.GridLayout
+        InputPanel matlab.ui.container.Panel
+        OutputPanel matlab.ui.container.Panel
+        TabGroup matlab.ui.container.TabGroup
+        TabScalars matlab.ui.container.Tab
+        TabCollisions matlab.ui.container.Tab
+        TabTransport matlab.ui.container.Tab
+        TabMag matlab.ui.container.Tab
+        AxScalars matlab.ui.control.UIAxes
+        AxCollisions matlab.ui.control.UIAxes
+        AxTransport matlab.ui.control.UIAxes
+        AxMag matlab.ui.control.UIAxes
+
+        DensityEdit matlab.ui.control.NumericEditField
+        DensityUnitsDrop matlab.ui.control.DropDown
+        TempModeDrop matlab.ui.control.DropDown
+        TempSingleEdit matlab.ui.control.NumericEditField
+        TempSingleUnitsDrop matlab.ui.control.DropDown
+        NPointsEdit matlab.ui.control.NumericEditField
+        ZEdit matlab.ui.control.NumericEditField
+        SpeciesDrop matlab.ui.control.DropDown
+        MWEdit matlab.ui.control.NumericEditField
+        BEdit matlab.ui.control.NumericEditField
+        LnModeDrop matlab.ui.control.DropDown
+        LnEdit matlab.ui.control.NumericEditField
+        ComputeButton matlab.ui.control.Button
+        SweepButton matlab.ui.control.Button
+        ExportButton matlab.ui.control.Button
+        OutputArea matlab.ui.control.TextArea
+
+        LastResults struct = struct()
+    end
+
+    methods (Access = private)
+        function startupFcn(app)
+            app.SpeciesChanged();
+            app.LnModeChanged();
+        end
+
+        function SpeciesChanged(app, ~, ~)
+            u = plasma.units();
+            sp = app.SpeciesDrop.Value;
+            if isfield(u.species, sp)
+                app.MWEdit.Value = u.species.(sp);
+            end
+        end
+
+        function LnModeChanged(app, ~, ~)
+            app.LnEdit.Editable = strcmp(app.LnModeDrop.Value, 'manual');
+        end
+
+        function params = gatherParams(app, mode)
+            params = struct();
+            params.n_val = app.DensityEdit.Value;
+            params.n_unit = app.DensityUnitsDrop.Value;
+            params.Z = app.ZEdit.Value;
+            params.MW_amu = app.MWEdit.Value;
+            params.B_T = app.BEdit.Value;
+            params.lnLambda_mode = app.LnModeDrop.Value;
+            params.lnLambda = app.LnEdit.Value;
+
+            switch mode
+                case 'single'
+                    T = app.TempSingleEdit.Value;
+                    if strcmp(app.TempSingleUnitsDrop.Value, 'keV')
+                        T = T * 1e3;
+                    end
+                    params.T_val_eV = T;
+                case 'sweep'
+                    npt = max(5, round(app.NPointsEdit.Value));
+                    params.T_val_eV = logspace(0, 5, npt).'; % 1 eV to 100 keV
+            end
+        end
+
+        function showResults(app, r)
+            txt = {
+                sprintf('n = %.4e m^-3', r.n_m3), ...
+                sprintf('T = %.4e eV', r.T_eV(1)), ...
+                sprintf('p = %.4e Pa', r.p_Pa(1)), ...
+                sprintf('v_te = %.4e m/s', r.v_te_ms(1)), ...
+                sprintf('v_ti = %.4e m/s', r.v_ti_ms(1)), ...
+                sprintf('omega_pe = %.4e rad/s', r.omega_pe_rad_s(1)), ...
+                sprintf('omega_pi = %.4e rad/s', r.omega_pi_rad_s(1)), ...
+                sprintf('lambda_D = %.4e m', r.lambda_D_m(1)), ...
+                sprintf('Omega_ce = %.4e rad/s', r.Omega_ce_rad_s(1)), ...
+                sprintf('Omega_ci = %.4e rad/s', r.Omega_ci_rad_s(1)), ...
+                sprintf('nu_ei = %.4e 1/s', r.nu_ei_Hz(1)), ...
+                sprintf('nu_ii = %.4e 1/s', r.nu_ii_Hz(1)), ...
+                sprintf('beta_e = %.4e', r.beta_e(1)), ...
+                sprintf('beta_i = %.4e', r.beta_i(1)), ...
+                sprintf('sigma|| = %.4e S/m', r.sigma_par_S_m(1)), ...
+                sprintf('eta|| = %.4e Ohm*m', r.eta_par_Ohm_m(1)), ...
+                sprintf('kappa_e|| = %.4e W/(m*K)', r.kappa_e_par_W_mK(1)), ...
+                sprintf('kappa_i|| = %.4e W/(m*K)', r.kappa_i_par_W_mK(1)) ...
+                };
+            app.OutputArea.Value = txt;
+        end
+
+        function ComputeButtonPushed(app, ~, ~)
+            try
+                p = app.gatherParams('single');
+                r = plasma.computeAll(p);
+                app.LastResults = r;
+                app.showResults(r);
+            catch ME
+                uialert(app.UIFigure, ME.message, 'Input/compute error');
+            end
+        end
+
+        function SweepButtonPushed(app, ~, ~)
+            try
+                p = app.gatherParams('sweep');
+                r = plasma.computeAll(p);
+                app.LastResults = r;
+                axStruct = struct('Scalars', app.AxScalars, 'Collisions', app.AxCollisions, ...
+                    'Transport', app.AxTransport, 'Magnetization', app.AxMag);
+                plasma.plotSweep(axStruct, r);
+                app.OutputArea.Value = {sprintf('Sweep complete: %d points.', numel(r.T_eV))};
+            catch ME
+                uialert(app.UIFigure, ME.message, 'Sweep error');
+            end
+        end
+
+        function ExportButtonPushed(app, ~, ~)
+            if isempty(fieldnames(app.LastResults))
+                uialert(app.UIFigure, 'Compute or sweep first.', 'No data');
+                return
+            end
+            [f, p] = uiputfile('plasma_sweep.csv', 'Export CSV');
+            if isequal(f,0)
+                return
+            end
+            r = app.LastResults;
+            T = table(r.T_eV, r.p_Pa, r.lambda_D_m, r.nu_ei_Hz, r.nu_ii_Hz, ...
+                r.sigma_par_S_m, r.eta_par_Ohm_m, r.beta_e, r.beta_i, ...
+                'VariableNames', {'T_eV','p_Pa','lambda_D_m','nu_ei_Hz','nu_ii_Hz',...
+                'sigma_par_S_m','eta_par_Ohm_m','beta_e','beta_i'});
+            writetable(T, fullfile(p,f));
+        end
+
+        function createComponents(app)
+            app.UIFigure = uifigure('Name', 'PlasmaTool');
+            app.UIFigure.Position = [50 50 1200 760];
+
+            app.Grid = uigridlayout(app.UIFigure, [2 2]);
+            app.Grid.RowHeight = {260, '1x'};
+            app.Grid.ColumnWidth = {360, '1x'};
+
+            app.InputPanel = uipanel(app.Grid, 'Title', 'Inputs');
+            app.InputPanel.Layout.Row = 1;
+            app.InputPanel.Layout.Column = 1;
+            ig = uigridlayout(app.InputPanel, [13 2]);
+            ig.RowHeight = repmat({22},1,13);
+            ig.ColumnWidth = {180, '1x'};
+
+            uilabel(ig, 'Text', 'Density n');
+            app.DensityEdit = uieditfield(ig, 'numeric', 'Value', 1e19, 'Tooltip', 'Plasma density');
+            uilabel(ig, 'Text', 'Density units');
+            app.DensityUnitsDrop = uidropdown(ig, 'Items', {'m^-3','cm^-3'}, 'Value', 'm^-3');
+            uilabel(ig, 'Text', 'Temperature mode');
+            app.TempModeDrop = uidropdown(ig, 'Items', {'single','sweep'}, 'Value', 'single', ...
+                'Tooltip', 'Single value or log sweep 1eV..100keV');
+            uilabel(ig, 'Text', 'T (single)');
+            app.TempSingleEdit = uieditfield(ig, 'numeric', 'Value', 1000);
+            uilabel(ig, 'Text', 'T units');
+            app.TempSingleUnitsDrop = uidropdown(ig, 'Items', {'eV','keV'}, 'Value', 'eV');
+            uilabel(ig, 'Text', 'N points (sweep)');
+            app.NPointsEdit = uieditfield(ig, 'numeric', 'Value', 200);
+            uilabel(ig, 'Text', 'Mean charge state Z');
+            app.ZEdit = uieditfield(ig, 'numeric', 'Value', 1);
+            uilabel(ig, 'Text', 'Species');
+            app.SpeciesDrop = uidropdown(ig, 'Items', {'H','D','T','He','Ar'}, 'Value', 'H', ...
+                'ValueChangedFcn', @(s,e)app.SpeciesChanged(s,e));
+            uilabel(ig, 'Text', 'MW [amu] (override)');
+            app.MWEdit = uieditfield(ig, 'numeric', 'Value', 1.00784);
+            uilabel(ig, 'Text', 'B [T]');
+            app.BEdit = uieditfield(ig, 'numeric', 'Value', 1);
+            uilabel(ig, 'Text', 'lnLambda mode');
+            app.LnModeDrop = uidropdown(ig, 'Items', {'auto','manual'}, 'Value', 'auto', ...
+                'ValueChangedFcn', @(s,e)app.LnModeChanged(s,e));
+            uilabel(ig, 'Text', 'lnLambda');
+            app.LnEdit = uieditfield(ig, 'numeric', 'Value', 15, 'Editable', 'off');
+
+            app.ComputeButton = uibutton(app.InputPanel, 'Text', 'Compute', ...
+                'Position', [20 10 90 28], 'ButtonPushedFcn', @(s,e)app.ComputeButtonPushed(s,e));
+            app.SweepButton = uibutton(app.InputPanel, 'Text', 'Plot Sweep', ...
+                'Position', [120 10 90 28], 'ButtonPushedFcn', @(s,e)app.SweepButtonPushed(s,e));
+            app.ExportButton = uibutton(app.InputPanel, 'Text', 'Export CSV', ...
+                'Position', [220 10 90 28], 'ButtonPushedFcn', @(s,e)app.ExportButtonPushed(s,e));
+
+            app.OutputPanel = uipanel(app.Grid, 'Title', 'Numeric Outputs');
+            app.OutputPanel.Layout.Row = 1;
+            app.OutputPanel.Layout.Column = 2;
+            app.OutputArea = uitextarea(app.OutputPanel, 'Position', [10 10 780 220], ...
+                'Editable', 'off', 'Tooltip', 'Computed scalar outputs');
+
+            app.TabGroup = uitabgroup(app.Grid);
+            app.TabGroup.Layout.Row = 2;
+            app.TabGroup.Layout.Column = [1 2];
+            app.TabScalars = uitab(app.TabGroup, 'Title', 'Scalars');
+            app.TabCollisions = uitab(app.TabGroup, 'Title', 'Collisions');
+            app.TabTransport = uitab(app.TabGroup, 'Title', 'Transport');
+            app.TabMag = uitab(app.TabGroup, 'Title', 'Magnetization');
+
+            app.AxScalars = uiaxes(app.TabScalars, 'Position', [20 20 1120 410]);
+            app.AxCollisions = uiaxes(app.TabCollisions, 'Position', [20 20 1120 410]);
+            app.AxTransport = uiaxes(app.TabTransport, 'Position', [20 20 1120 410]);
+            app.AxMag = uiaxes(app.TabMag, 'Position', [20 20 1120 410]);
+        end
+    end
+
+    methods (Access = public)
+        function app = PlasmaTool()
+            app.createComponents();
+            startupFcn(app);
+        end
+
+        function delete(app)
+            if isvalid(app.UIFigure)
+                delete(app.UIFigure);
+            end
+        end
+    end
+end
